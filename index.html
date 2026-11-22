@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Route Grouper</title>
+<meta name="description" content="Fewer times in and out of the van: groups Amazon Flex stops into parking stops you can walk from.">
+<meta name="theme-color" content="#15181b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Route Grouper">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{color-scheme:light dark;--bg:light-dark(#eceee9,#121517);--card:light-dark(#fff,#1c2024);--ink:light-dark(#15181b,#eef0f1);--mute:light-dark(#5b636a,#9ba4ac);--line:light-dark(#dcdfd8,#2e3439);--hv:#ff5a1f;--hvink:light-dark(#c2410c,#ff8a5c);--hvsoft:light-dark(#fff1ea,#35201a);--ok:light-dark(#1d7a46,#5fd08f);--oksoft:light-dark(#e6f4ec,#173022)}
+*{box-sizing:border-box;min-width:0}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;overflow-x:clip}
+.top{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:8px;padding:calc(env(safe-area-inset-top) + 8px) max(env(safe-area-inset-right),14px) 8px max(env(safe-area-inset-left),14px);background:var(--ink);color:var(--bg)}
+.top h1{flex:1;margin:0;font-size:20px;letter-spacing:-.01em}.top h1 span{color:var(--hv)}
+.icon{display:inline-grid;place-items:center;width:44px;height:44px;border-radius:12px;border:0;background:transparent;color:inherit;cursor:pointer;font-size:22px}
+.icon.add{background:var(--hv);color:#fff}
+.icon input{display:none}
+main{max-width:720px;margin:0 auto;padding:14px max(env(safe-area-inset-left),14px) 40px}
+body.hasnext main{padding-bottom:130px}
+button,.btn{font-weight:600;font-size:16px;font-family:inherit;min-height:44px;padding:0 16px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button:disabled{opacity:.45}
+:focus-visible{outline:3px solid var(--hv);outline-offset:2px}
+.hero{padding:10px 0}
+.hero h2{font-size:30px;line-height:1.1;margin:8px 0}
+.hero p{color:var(--mute);margin:0 0 18px}
+.bigbtn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;min-height:56px;border-radius:16px;background:var(--hv);color:#fff;font-weight:700;font-size:18px;cursor:pointer}
+.bigbtn input{display:none}
+.steps{list-style:none;padding:0;margin:18px 0 0;display:grid;gap:10px}
+.steps li{display:flex;gap:12px;background:var(--card);border-radius:14px;padding:12px 14px}
+.steps b.n{color:var(--hv);font-size:20px;line-height:1.2}
+.status{min-height:22px;color:var(--mute);margin:8px 2px;font-size:15px}.status.err{color:var(--hvink);font-weight:600}
+.note{background:var(--hvsoft);border-radius:12px;padding:10px 14px;margin:8px 0;font-size:15px}
+.note a{color:var(--hvink);font-weight:700}
+.verdict{background:var(--card);border-radius:18px;padding:16px;margin-top:4px}
+.verdict.win{background:var(--hvsoft)}.verdict.same{background:var(--oksoft)}
+.verdict h2{margin:0;font-size:26px;line-height:1.15}
+.verdict.win em{font-style:normal;color:var(--hvink)}.verdict.same em{font-style:normal;color:var(--ok)}
+.verdict p{margin:8px 0 0}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
+.tiles div{background:var(--card);border-radius:12px;padding:10px}
+.tiles b{display:block;font-size:16px;line-height:1.2}
+.tiles small{color:var(--mute);font-size:12px}
+.seg{display:flex;background:var(--card);border-radius:14px;padding:4px;gap:4px;margin-top:10px}
+.seg button{flex:1;border:0;min-height:40px;background:transparent}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--bg)}
+.park{background:var(--card);border-radius:16px;margin-top:12px;overflow:hidden}
+.park header{display:flex;gap:10px;align-items:center;padding:12px 14px 6px}
+.pnum{background:var(--hv);color:#fff;border-radius:8px;padding:2px 8px;font-weight:800;font-size:15px}
+.pdone .pnum{background:var(--ok)}
+.ptxt{flex:1;display:flex;flex-direction:column}.ptxt small{color:var(--mute);font-size:13px}
+.door{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:10px 14px;border-top:1px solid var(--line);cursor:pointer}
+.badge{min-width:50px;height:46px;padding:0 8px;border-radius:23px;display:grid;place-items:center;align-content:center;background:var(--ink);color:var(--bg);font-weight:800;font-size:19px;line-height:1;text-align:center}
+.badge small{display:block;font-size:9px;opacity:.75;letter-spacing:.04em}
+.rep .badge{background:var(--hv);color:#fff}
+.done .badge{background:var(--ok);color:#fff}
+.txt{display:flex;flex-direction:column}.txt b{font-size:17px;line-height:1.25}
+.meta{font-size:13px;color:var(--mute)}.hot{color:var(--hvink);font-weight:600}
+.done .txt b,.done .pc{text-decoration:line-through;opacity:.5}
+.right{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.pc{font-weight:800;white-space:nowrap}
+a.nav{display:inline-flex;align-items:center;gap:5px;min-height:40px;min-width:44px;justify-content:center;padding:0 12px;border-radius:10px;background:var(--hv);color:#fff;font-weight:700;text-decoration:none;white-space:nowrap}
+a.nav svg{width:16px;height:16px}
+.tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+#map{height:min(72vh,680px);border-radius:16px;margin-top:10px;z-index:0}
+.pin{display:inline-grid;place-items:center;min-width:32px;height:32px;padding:0 6px;border-radius:16px;background:#15181b;color:#fff;font:800 13px -apple-system,system-ui,sans-serif;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.45);transform:translate(-50%,-50%);white-space:nowrap}
+.pin.hot{background:#ff5a1f}.pin.sq{border-radius:7px}.pin.dn{opacity:.4}
+.pop{font:14px/1.4 -apple-system,system-ui,sans-serif}.popbtns{display:flex;gap:8px;margin-top:8px}.popbtns button{min-height:40px;font-size:14px}
+.leaflet-popup-content a.nav{color:#fff}
+.next{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;gap:12px;align-items:center;padding:10px max(env(safe-area-inset-right),14px) calc(10px + env(safe-area-inset-bottom)) max(env(safe-area-inset-left),14px);background:var(--ink);color:var(--bg);box-shadow:0 -4px 16px rgba(0,0,0,.25)}
+.next .t{flex:1;display:flex;flex-direction:column;line-height:1.25}.next small{opacity:.7;font-size:13px}
+.next b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.next a.nav{min-height:48px;font-size:18px;padding:0 18px}
+.busy{position:fixed;inset:0;z-index:60;display:grid;place-items:center;background:rgba(0,0,0,.25)}
+.busy div{background:var(--card);border-radius:18px;padding:22px;max-width:300px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.3)}
+.spin{width:28px;height:28px;margin:0 auto 12px;border:3px solid var(--line);border-top-color:var(--hv);border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+dialog{border:0;border-radius:18px;padding:0;width:min(92vw,460px);background:var(--card);color:var(--ink)}
+dialog::backdrop{background:rgba(0,0,0,.4)}
+dialog form{padding:18px;display:grid;gap:14px}
+dialog h2{margin:0;font-size:22px}
+dialog label{display:grid;gap:6px;font-weight:600}
+dialog input{font:15px ui-monospace,Menlo,monospace;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+dialog p{margin:0;color:var(--mute);font-size:14px}
+dialog a{color:var(--hvink)}
+.rad{display:flex;gap:6px}.rad button{flex:1}.rad button[aria-pressed=true]{background:var(--ink);color:var(--bg)}
+.row{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.primary{background:var(--hv);border-color:var(--hv);color:#fff}
+.danger{color:var(--hvink)}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Route <span>Grouper</span></h1>
+  <button class="icon" id="settingsBtn" aria-label="Settings">⚙︎</button>
+  <label class="icon add" aria-label="Add itinerary screenshots">＋<input type="file" id="file" accept="image/*" multiple></label>
+</div>
+
+<main>
+  <p class="note" id="tokenNote" hidden>Add your free Mapbox token in <a href="#" id="tokenLink">Settings</a> so the app can find addresses and road distances.</p>
+
+  <section id="empty" class="hero">
+    <h2>Fewer times in and out of the van.</h2>
+    <p>Add your Flex Itinerary List screenshots. The app groups doors you can walk to from one parking spot, then orders the parking spots.</p>
+    <label class="bigbtn">Add itinerary screenshots<input type="file" id="file2" accept="image/*" multiple></label>
+    <ol class="steps">
+      <li><b class="n">1</b><span>In Flex, open <b>Itinerary List</b> and screenshot from stop 1 to the end. Overlaps are fine.</span></li>
+      <li><b class="n">2</b><span>Pick them all here. They're read on your phone and never uploaded.</span></li>
+      <li><b class="n">3</b><span>See how many times you'd park with Flex's order versus the grouped order. Stop numbers always match Flex.</span></li>
+    </ol>
+  </section>
+
+  <p class="status" id="status" role="status"></p>
+
+  <section id="route" hidden>
+    <div id="verdict"></div>
+    <div id="notes"></div>
+    <div class="seg" id="orderSeg" role="group" aria-label="Order"><button id="oGrouped">Grouped order</button><button id="oFlex">Flex order</button></div>
+    <div class="seg" role="group" aria-label="View"><button id="vList">List</button><button id="vMap">Map</button></div>
+    <div id="list"></div>
+    <div id="mapWrap" hidden><div id="map"></div></div>
+    <div class="tools"><button id="checkBtn">Check route again</button></div>
+  </section>
+</main>
+
+<div class="next" id="next" hidden></div>
+<div class="busy" id="busy" hidden><div><div class="spin"></div><span id="busyText">Working…</span></div></div>
+
+<dialog id="settings">
+  <form method="dialog">
+    <h2>Settings</h2>
+    <label>Walk up to
+      <div class="rad"><button type="button" data-r="100">100 m</button><button type="button" data-r="150">150 m</button><button type="button" data-r="250">250 m</button></div>
+    </label>
+    <p>Doors within this distance of a parking spot, measured along roads, are grouped into one stop.</p>
+    <label for="tokenInput">Mapbox token</label>
+    <input id="tokenInput" placeholder="pk.…" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <p>Finds addresses and draws the map. Free from <a href="https://account.mapbox.com/" target="_blank" rel="noopener">account.mapbox.com</a>: copy the Default public token.</p>
+    <label for="orsInput">OpenRouteService key</label>
+    <input id="orsInput" placeholder="eyJ…" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <p>Measures road distances between doors. Free from <a href="https://openrouteservice.org/dev/#/signup" target="_blank" rel="noopener">openrouteservice.org</a> (Dashboard, then request a Standard token). It can't charge you: over its limits it just stops for the day. Both keys are stored only on this phone.</p>
+    <div class="row">
+      <button type="button" id="newRoute" class="danger">New route</button>
+      <button type="button" id="closeSettings">Cancel</button>
+      <button id="saveSettings" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
