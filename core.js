@@ -62,6 +62,38 @@
   const query = s => [...s.lines, s.area, 'Ireland'].filter(Boolean).join(', ');
   const hasDeadline = s => !!s.deadline && /deliver by/i.test(s.deadline) && !/end of/i.test(s.deadline);
 
+  /* Checking a map result really is this address ("3 Killininny Cottages" is not "3 Killininny Court"). */
+  const squash = lines => tokens(lines).join('');
+  const GENERIC = new Set(['road', 'street', 'avenue', 'drive', 'court', 'park', 'grove', 'close', 'crescent', 'way', 'heights', 'lawn', 'rise', 'green', 'wood', 'view', 'place', 'square', 'lane', 'hill', 'gardens', 'terrace', 'walk', 'vale', 'manor', 'downs', 'meadows', 'cottages', 'the', 'upper', 'lower', 'north', 'south', 'east', 'west', 'new', 'old']);
+  const NOISE = new Set(['apartment', 'unit', 'flat', 'dublin', 'ireland', 'county', 'co']);
+  /** The comma-separated piece of the address that holds the house number, e.g. "31 KILLININNY COURT". */
+  function houseSegment(s) {
+    const h = houseNumber(s); if (!h) return null;
+    for (const line of s.lines) for (const seg of line.split(',')) {
+      const words = tokens([seg]);
+      if (words.some(w => w.toUpperCase() === h) && words.some(w => /[a-z]{3}/.test(w) && !NOISE.has(w))) return seg;
+    }
+    return null;
+  }
+  /** 'exact' = right house on the right street, 'street' = right street only, null = wrong place. */
+  function candidateFits(stop, cand) {
+    const st = tokens([cand.street || '']).filter(t => !/^\d/.test(t));
+    if (!st.length) return null;
+    const all = squash(stop.lines), seg = houseSegment(stop);
+    const onStreet = st.every(t => all.includes(t));                          // every street word appears somewhere
+    const key = st.filter(t => !GENERIC.has(t));
+    const right = key.every(t => squash(seg ? [seg] : stop.lines).includes(t)); // its distinctive words sit by the house number
+    if (!onStreet || !right) return null;
+    const h = houseNumber(stop);
+    return h && String(cand.num || '').toUpperCase() === h ? 'exact' : 'street';
+  }
+  /** The stop's street without house or apartment numbers, for a street-only lookup. */
+  function streetQuery(s) {
+    const base = houseSegment(s) || s.lines.join(', ');
+    const clean = base.replace(/\b(apartment|apt|unit|flat)\s*\d+[A-Za-z]?\b/ig, '').replace(/\b\d{1,4}[A-Za-z]?\b/g, '').replace(/\s+/g, ' ').replace(/^[\s,]+|[\s,]+$/g, '');
+    return [clean, s.area, 'Ireland'].filter(Boolean).join(', ');
+  }
+
   function haversine(a, b) {
     const R = 6371e3, r = x => x * Math.PI / 180, dl = r(b.lat - a.lat), dn = r(b.lon - a.lon);
     const s = Math.sin(dl / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dn / 2) ** 2;
@@ -95,24 +127,43 @@
     return out.sort((a, b) => a.first - b.first);
   }
 
+  /** Which street a door is on: the name the map matched, otherwise the words next to the house number. */
+  function doorStreet(d) {
+    if (d.geo && d.geo.street) return tokens([d.geo.street]).filter(t => !/^\d/.test(t)).join(' ');
+    const s = d.stops[0], seg = houseSegment(s);
+    return tokens(seg ? [seg] : s.lines).filter(t => !/^\d/.test(t) && !NOISE.has(t)).join(' ');
+  }
+  const parkStreets = p => new Set(p.doors.map(doorStreet).filter(Boolean));
+  /** How many times a sequence of parking stops goes back to a street it already left. */
+  function revisits(parks) {
+    const seen = new Set(); let prev = new Set(), r = 0;
+    for (const p of parks) {
+      const ss = parkStreets(p);
+      for (const s of ss) if (seen.has(s) && !prev.has(s)) { r++; break; }
+      ss.forEach(s => seen.add(s)); prev = ss;
+    }
+    return r;
+  }
+
   /* ---------- solver ---------- */
   function pathCost(p, T) { let c = 0; for (let i = 1; i < p.length; i++) c += T[p[i - 1]][p[i]]; return c; }
 
   /** 2-opt plus or-opt, first element fixed (that's where Flex starts). */
-  function improve(p, T, until) {
+  function improve(p, T, until, minGain) {
+    const g = minGain || 0.5;   // only change the order for a real saving
     let best = pathCost(p, T), imp = true;
     while (imp && Date.now() < until) {
       imp = false;
       for (let i = 1; i < p.length - 1 && Date.now() < until; i++) for (let j = i + 1; j < p.length; j++) {
         const q = p.slice(0, i).concat(p.slice(i, j + 1).reverse(), p.slice(j + 1)), c = pathCost(q, T);
-        if (c < best - 0.5) { p = q; best = c; imp = true; }
+        if (c < best - g) { p = q; best = c; imp = true; }
       }
       for (let L = 1; L <= 3; L++) for (let i = 1; i + L <= p.length && Date.now() < until; i++) {
         const seg = p.slice(i, i + L), rest = p.slice(0, i).concat(p.slice(i + L));
         for (let j = 1; j <= rest.length; j++) {
           if (j === i) continue;
           const q = rest.slice(0, j).concat(seg, rest.slice(j)), c = pathCost(q, T);
-          if (c < best - 0.5) { p = q; best = c; imp = true; break; }
+          if (c < best - g) { p = q; best = c; imp = true; break; }
         }
       }
     }
@@ -163,12 +214,19 @@
     }
     const gi = groups.findIndex(g => g.m.includes(flexU[0]));
     if (gi > 0) groups.unshift(groups.splice(gi, 1)[0]);
-    const PT = groups.map(a => groups.map(b => M.T[a.spot][b.spot]));
+    // Finish a street before leaving it: moving between parking stops on different streets costs an extra 45 s
+    // in the planning (not in the times shown), so the route only splits a street when that really saves driving.
+    const STREET_SWITCH = 45;
+    const gStreets = groups.map(g => new Set(g.m.map(i => doorStreet(D(i))).filter(Boolean)));
+    const shares = (a, b) => [...gStreets[a]].some(s => gStreets[b].has(s));
+    const PT = groups.map((a, x) => groups.map((b, y) => M.T[a.spot][b.spot] + (x !== y && !shares(x, y) ? STREET_SWITCH : 0)));
     const all = [...groups.keys()], until = Date.now() + 3000;
-    const a = improve(all, PT, until), b = improve(nearest(0, all, (x, y) => PT[x][y]), PT, until + 1500);
-    const order = a.c <= b.c ? a.p : b.p;
+    // Start from Flex's own order and only move a parking stop when it saves at least 20 seconds, so small map
+    // quirks (a pin snapped to a car park entrance) can't reshuffle the route. A fresh order must beat it by a minute.
+    const a = improve(all, PT, until, 20), b = improve(nearest(0, all, (x, y) => PT[x][y]), PT, until + 1500, 20);
+    const order = b.c < a.c - 60 ? b.p : a.p;
     const grouped = order.map(k => mkPark(groups[k].spot, groups[k].m));
-    const groupedDrive = pathCost(order.map(k => groups[k].spot), M.T);
+    const groupedDrive = pathCost(order.map(k => groups[k].spot), M.T);   // real driving time, no street penalty
     // doors not found on the map: their own stop, right after their Flex predecessor
     for (const d of doors.filter(x => !idx.has(x.key))) {
       const prev = sorted.filter(s => s.n < d.first).reverse().map(s => doorOf.get(s.n)).find(k => idx.has(k));
@@ -178,9 +236,11 @@
       }
     }
     const fewer = flex.length - grouped.length, saved = flexDrive - groupedDrive;
-    const worth = fewer >= Math.max(2, Math.round(flex.length * 0.05)) || saved >= Math.max(180, flexDrive * 0.05);
-    return { flex, grouped, flexDrive, groupedDrive, worth, fewer, saved, stopCount: stops.length, doorCount: doors.length, n };
+    const flexBack = revisits(flex), groupedBack = revisits(grouped);
+    const worth = fewer >= Math.max(2, Math.round(flex.length * 0.05)) || saved >= Math.max(180, flexDrive * 0.05)
+      || (groupedBack < flexBack && saved >= -60);                                   // tidier, and not slower
+    return { flex, grouped, flexDrive, groupedDrive, worth, fewer, saved, flexBack, groupedBack, stopCount: stops.length, doorCount: doors.length, n };
   }
 
-  root.RG = { parseScreen, stopKey, houseNumber, display, query, hasDeadline, haversine, buildDoors, solve, improve, pathCost, tidy };
+  root.RG = { doorStreet, revisits, parseScreen, candidateFits, streetQuery, houseSegment, stopKey, houseNumber, display, query, hasDeadline, haversine, buildDoors, solve, improve, pathCost, tidy };
 })(typeof window !== 'undefined' ? window : globalThis);

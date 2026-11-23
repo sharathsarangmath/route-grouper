@@ -1,5 +1,5 @@
 // Keeps the app working with poor signal: the app itself is cached; Mapbox calls always go to the network.
-const CACHE = 'rg-v1';
+const CACHE = 'rg-v3';
 const SHELL = ['./', 'index.html', 'core.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 const LIBS = ['https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css', 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js',
   'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'];

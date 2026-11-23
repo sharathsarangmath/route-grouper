@@ -156,16 +156,30 @@ async function mb(url) {
   throw new Error('rate');
 }
 
+/**
+ * Finds a stop on the map. Only accepts a result whose street really matches the stop: Mapbox sometimes answers
+ * "3 Killininny Court" with "3 Killininny Cottages", a different street. If the exact house can't be confirmed,
+ * it falls back to the middle of the right street and marks the pin as approximate.
+ */
 async function geocode(stop, near) {
-  const u = new URL('https://api.mapbox.com/search/geocode/v6/forward');
-  u.search = new URLSearchParams({ q: RG.query(stop).slice(0, 250), country: 'ie', types: 'address', limit: '1', proximity: `${near.lon},${near.lat}`, access_token: token });
-  const j = await mb(u);
-  const f = j.features && j.features[0];
-  if (!f) return { miss: 1 };
-  const [lon, lat] = f.geometry.coordinates;
-  const num = f.properties && f.properties.context && f.properties.context.address && f.properties.context.address.address_number;
-  const house = RG.houseNumber(stop);
-  return { lat, lon, exact: !!house && String(num || '').toUpperCase() === house };
+  const ask = async (q, types) => {
+    const u = new URL('https://api.mapbox.com/search/geocode/v6/forward');
+    u.search = new URLSearchParams({ q: q.slice(0, 250), country: 'ie', types, limit: '5', autocomplete: 'false', proximity: `${near.lon},${near.lat}`, access_token: token });
+    const j = await mb(u);
+    return (j.features || []).map(f => {
+      const p = f.properties || {}, c = p.context || {};
+      return { lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1],
+        num: c.address && c.address.address_number,
+        street: (c.address && c.address.street_name) || (c.street && c.street.name) || p.name || '' };
+    });
+  };
+  const houses = await ask(RG.query(stop), 'address');
+  const exact = houses.find(c => RG.candidateFits(stop, c) === 'exact');
+  if (exact) return { lat: exact.lat, lon: exact.lon, exact: true, street: exact.street };
+  const streets = await ask(RG.streetQuery(stop), 'street');
+  const street = streets.find(c => RG.candidateFits(stop, c)) || houses.find(c => RG.candidateFits(stop, c));
+  if (street) return { lat: street.lat, lon: street.lon, exact: false, street: street.street };
+  return { miss: 1 };
 }
 
 /**
@@ -291,9 +305,12 @@ function render() {
   if (!r) v = `<div class="verdict"><h2>${busy ? 'Checking your route…' : 'Not checked yet'}</h2><p>${token ? 'Tap <b>Check route</b> to compare with Flex.' : 'Add your free Mapbox token in Settings first.'}</p></div>`;
   else if (r.worth) {
     const drv = r.saved >= 60 ? ` Driving is about ${mins(r.saved)} shorter too.` : r.saved <= -60 ? ` Driving is about ${mins(-r.saved)} longer, but you're out of the van far less.` : '';
-    v = `<div class="verdict win"><h2>Park <em>${r.grouped.length} times</em> instead of ${r.flex.length}</h2><p>That's ${r.flex.length - r.grouped.length} fewer times in and out of the van, walking up to ${st.R} m from where you park.${drv}</p>`;
+    const back = r.flexBack > r.groupedBack ? ` Flex sends you back to a street you'd already left ${r.flexBack} time${r.flexBack > 1 ? 's' : ''}; this order ${r.groupedBack ? `does it ${r.groupedBack} time${r.groupedBack > 1 ? 's' : ''}` : 'never does'}.` : '';
+    v = r.fewer > 0
+      ? `<div class="verdict win"><h2>Park <em>${r.grouped.length} times</em> instead of ${r.flex.length}</h2><p>That's ${r.fewer} fewer times in and out of the van, walking up to ${st.R} m from where you park.${drv}${back}</p>`
+      : `<div class="verdict win"><h2>Each street <em>in one go</em></h2><p>Same number of parking stops, but no doubling back.${drv}${back}</p>`;
   } else v = `<div class="verdict same"><h2>Flex's order is <em>already fine</em></h2><p>Grouping only gets you to ${r.grouped.length} parking stops versus ${r.flex.length} with Flex's order, so follow Flex and park once wherever doors are close.</p>`;
-  if (r) v += `<div class="tiles"><div><b>${r.flex.length} → ${r.grouped.length}</b><small>times you park</small></div><div><b>${mins(r.flexDrive)} → ${mins(r.groupedDrive)}</b><small>driving</small></div><div><b>${r.doorCount}</b><small>doors (${r.stopCount} stops)</small></div></div></div>`;
+  if (r) v += `<div class="tiles"><div><b>${r.flex.length} → ${r.grouped.length}</b><small>times you park</small></div><div><b>${mins(r.flexDrive)} → ${mins(r.groupedDrive)}</b><small>driving</small></div><div><b>${r.flexBack} → ${r.groupedBack}</b><small>back to a street</small></div><div><b>${r.doorCount}</b><small>doors (${r.stopCount} stops)</small></div></div></div>`;
   $('#verdict').innerHTML = v;
   // notes
   const ns = stops.map(s => s.n), miss = [];
